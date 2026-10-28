@@ -788,7 +788,7 @@ function applyTheme(t){ document.documentElement.classList.toggle('dark', t==='d
 applyTheme(localStorage.getItem('spark_theme') || 'light');
 $('themeBtn').onclick = function(){ var cur = localStorage.getItem('spark_theme') || 'light'; var nxt = cur === 'light' ? 'dark' : 'light'; localStorage.setItem('spark_theme', nxt); applyTheme(nxt); };
 
-// AUTH (Diperbarui: Email Admin dihapus dari frontend, keamanan via Firebase Rules)
+// AUTH
 auth.onAuthStateChanged(function(user){
   if(user){
     me = { uid: user.uid, name: user.displayName || (user.email||'').split('@')[0] || 'Warga', email: user.email || '', photoURL: user.photoURL || null, avatarBase64: null, role: 'warga', verified: false };
@@ -801,7 +801,8 @@ auth.onAuthStateChanged(function(user){
       if(d.role) me.role = d.role;
       if(d.verified) me.verified = true;
 
-      rtdb.ref('users/' + me.uid).update({ uid: me.uid, name: me.name, email: me.email, photoURL: me.photoURL, role: me.role, verified: !!me.verified, lastSeen: TS });
+      // [PATCH 1] email & photoURL TIDAK disimpan ke DB
+      rtdb.ref('users/' + me.uid).update({ uid: me.uid, name: me.name, role: me.role, verified: !!me.verified, lastSeen: TS });
       
       setTimeout(function(){
         $('loginLoading').classList.remove('on'); $('splash').style.display = 'none'; hide('welcomeOv');
@@ -1094,7 +1095,8 @@ $('commentSend').onclick = async function(){
   if(!t || !activePostId) return;
   $('commentSend').disabled = true; $('commentInput').value = '';
   try {
-    await rtdb.ref('comments/' + activePostId).push({ text: t, authorId: me.uid, authorName: me.name, authorPhoto: me.photoURL || null, authorAvatarBase64: me.avatarBase64 || null, createdAt: TS });
+    // [PATCH 3] authorPhoto TIDAK disimpan ke DB
+    await rtdb.ref('comments/' + activePostId).push({ text: t, authorId: me.uid, authorName: me.name, authorAvatarBase64: me.avatarBase64 || null, createdAt: TS });
     try { await rtdb.ref('posts/' + activePostId + '/commentCount').transaction(function(c){ return (c || 0) + 1; }); } catch(e){}
     await loadComments(activePostId); toast('Komentar terkirim');
     setTimeout(function(){ $('postScroll').scrollTop = $('postScroll').scrollHeight; }, 200);
@@ -1161,7 +1163,8 @@ $('composePost').onclick = async function(){
   if(!text && !composeImgs.length) return;
   $('composePost').disabled = true; $('composeBtnText').textContent = '...';
   try {
-    var payload = { text: text, images: composeImgs.slice(), category: composeCat, authorId: me.uid, authorName: me.name, authorPhoto: me.photoURL || null, authorAvatarBase64: me.avatarBase64 || null, likedBy: {}, commentCount: 0, pinned: false, createdAt: TS };
+    // [PATCH 2] authorPhoto TIDAK disimpan ke DB
+    var payload = { text: text, images: composeImgs.slice(), category: composeCat, authorId: me.uid, authorName: me.name, authorAvatarBase64: me.avatarBase64 || null, likedBy: {}, commentCount: 0, pinned: false, createdAt: TS };
     if(composeCat === 'informasi' && $('eventDate').value){ payload.eventDate = new Date($('eventDate').value).getTime(); payload.eventLocation = $('eventLocation').value.trim(); }
     if(isAdmin() && $('pinCheck').checked) payload.pinned = true;
     await rtdb.ref('posts').push(payload);
@@ -1172,10 +1175,7 @@ $('composePost').onclick = async function(){
 };
 
 // WARGA & PROFILE
-// ============================================================
 // [FIX] subscribeUsers — hapus orderByChild('lastSeen').limitToLast(200)
-// agar semua user muncul (termasuk yang tidak punya field lastSeen)
-// ============================================================
 function subscribeUsers(){
   if(unsubUsers){ try { unsubUsers(); } catch(e){} }
   var ref = rtdb.ref('users');
@@ -1186,11 +1186,7 @@ function subscribeUsers(){
   unsubUsers = function(){ ref.off('value', listener); };
 }
 
-// ============================================================
 // [FIX] renderWargaList — tampilkan SEMUA user (bukan hanya verified)
-// user belum verifikasi tetap tampil dengan label "Belum Verifikasi"
-// count = sama dengan panel admin (kecuali user yang sudah dihapus/blocked)
-// ============================================================
 function renderWargaList(){
   var el = $('allList');
   var aktif = users.filter(function(u){ return u.role !== 'blocked' && u.name !== 'Warga Dihapus'; });
@@ -1548,9 +1544,9 @@ async function sendAiMessage(text) {
   $('aiChatInput').value = '';
   $('aiChatInput').style.height = 'auto';
 
-  // Siapkan konteks dari Firebase
+  // [PATCH 5] Snippet lebih pendek, tanpa authorName
   var ctxPost = feed.slice(0, 8).map(function(p){
-    return { text: (p.text||'').slice(0, 200), category: p.category, authorName: p.authorName, eventDate: p.eventDate || 0 };
+    return { text: (p.text||'').slice(0, 100), category: p.category, eventDate: p.eventDate || 0 };
   });
   var ctxWarga = users.filter(function(u){ return u.role === 'admin'; }).slice(0, 10).map(function(u){
     return { name: u.name, role: u.role, blok: u.blok };
@@ -1561,12 +1557,20 @@ async function sendAiMessage(text) {
     text: q.slice(0, 300),
     posts: JSON.stringify(ctxPost),
     warga: JSON.stringify(ctxWarga),
-    clientId: me ? me.uid.substring(0, 20) : 'anon'
+    // [PATCH 4] clientId anonim, bukan UID
+    clientId: (function(){
+      var id = localStorage.getItem('spark_anon_id');
+      if(!id){
+        id = 'anon_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        localStorage.setItem('spark_anon_id', id);
+      }
+      return id;
+    })()
   };
 
   try {
     var ctrl = new AbortController();
-    var to = setTimeout(function(){ ctrl.abort(); }, 90000); // Timeout 90 detik
+    var to = setTimeout(function(){ ctrl.abort(); }, 90000);
     var res = await fetch(AI_WEBAPP_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -1601,7 +1605,6 @@ async function sendAiMessage(text) {
   }
 }
 
-// Event Listeners untuk Chat AI
 $('aiChatSend').onclick = function(){ sendAiMessage($('aiChatInput').value); };
 $('aiChatInput').addEventListener('keydown', function(e){ if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); $('aiChatSend').click(); } });
 $('aiChatInput').addEventListener('input', function(e){ e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 80) + 'px'; });
@@ -1663,10 +1666,8 @@ window.addEventListener('load', function(){
 
 // ============================================================
 // TAMBAHAN: EDIT POST, EDIT KOMENTAR, & PROTEKSI GAMBAR
-// (Tidak mengubah logika asli, murni penambahan dari bawah)
 // ============================================================
 
-// 1. FUNGSI EDIT POST
 function openEditPost(p) {
   editingPostId = p.id;
   composeImgs = (p.images || []).slice();
@@ -1700,7 +1701,6 @@ function openEditPost(p) {
   setTimeout(function(){ $('composeText').focus(); }, 300);
 }
 
-// 2. WRAPPER SIMPAN POST (Dukung Mode Edit)
 (function(){
   var btn = $('composePost');
   var origHandler = btn.onclick; 
@@ -1737,7 +1737,6 @@ function openEditPost(p) {
   };
 })();
 
-// 3. FUNGSI EDIT KOMENTAR
 async function openEditComment(cid) {
   if (!activePostId) return;
   loader(true, 'Memuat...');
@@ -1773,7 +1772,6 @@ async function openEditComment(cid) {
   }
 }
 
-// 4. INJECT TOMBOL EDIT KE KOMENTAR (Tanpa ubah renderComments asli)
 function injectCommentEditButtons() {
   var list = $('commentsList');
   if (!list) return;
@@ -1795,7 +1793,6 @@ function injectCommentEditButtons() {
   });
 }
 
-// 5. OBSERVER UNTUK TOMBOL EDIT KOMENTAR
 var _commentObs = new MutationObserver(function(){
   if (tab === 'post') injectCommentEditButtons();
 });
@@ -1804,7 +1801,6 @@ setInterval(function(){
   if (tab === 'post') injectCommentEditButtons();
 }, 1500);
 
-// 6. PROTEKSI GAMBAR (ANTI-SAVE)
 (function(){
   document.addEventListener('contextmenu', function(e){
     var t = e.target;
@@ -1905,7 +1901,6 @@ setInterval(function(){
 // TAMBAHAN: CUSTOM DIALOG POPUP & HAPUS AKUN (SOFT DELETE)
 // ============================================================
 
-// 1. FUNGSI POPUP KUSTOM (PENGGANTI ALERT/CONFIRM BAWAAN)
 window.showDialog = function(title, desc, onConfirm, icon, btnText, btnCancel) {
   if (!icon) icon = '⚠️';
   if (!btnText) btnText = 'Ya, Lanjutkan';
@@ -1930,7 +1925,6 @@ window.showDialog = function(title, desc, onConfirm, icon, btnText, btnCancel) {
   d.onclick = function(e) { if (e.target === d) d.classList.remove('on'); };
 };
 
-// 2. FUNGSI HAPUS AKUN MANDIRI (SOFT DELETE)
 window.deleteMyAccount = function() {
   showDialog(
     'Hapus Akun?', 
@@ -1938,7 +1932,6 @@ window.deleteMyAccount = function() {
     async function() {
       loader(true, 'Menghapus akun...');
       try {
-        // Ubah nama di semua postingannya jadi "Warga Dihapus"
         var snapPosts = await rtdb.ref('posts').orderByChild('authorId').equalTo(me.uid).once('value');
         var updates = {};
         snapPosts.forEach(function(child) {
@@ -1947,10 +1940,8 @@ window.deleteMyAccount = function() {
         });
         if (Object.keys(updates).length > 0) await rtdb.ref().update(updates);
 
-        // Hapus profil user dari database
         await rtdb.ref('users/' + me.uid).remove();
         
-        // Hapus Auth Google
         var user = auth.currentUser;
         if (user) await user.delete();
         
@@ -1975,7 +1966,6 @@ window.deleteMyAccount = function() {
   );
 };
 
-// 3. SUNTIK TOMBOL HAPUS AKUN KE PROFIL
 setInterval(function() {
   var logoutBtn = $('logoutBtn');
   if (logoutBtn && !$('btnHapusAkun')) {
@@ -1989,12 +1979,10 @@ setInterval(function() {
   }
 }, 1000);
 
-// 4. FITUR ADMIN KELUARKAN WARGA (DARI MENU KELOLA WARGA)
 var _adminMonitor = setInterval(function() {
   var manageList = $('manageWargaList');
   if (!manageList) return;
   
-  // Cari dropdown role yang belum disuntik tombol hapus
   manageList.querySelectorAll('select[data-uid]').forEach(function(sel) {
     if (sel.dataset.delInjected === '1') return;
     
@@ -2012,11 +2000,9 @@ var _adminMonitor = setInterval(function() {
         async function() {
           loader(true, 'Memproses...');
           try {
-            // Ambil nama user
             var userSnap = await rtdb.ref('users/' + uid).once('value');
             var uName = userSnap.val() ? userSnap.val().name : 'Warga Dihapus';
 
-            // Ganti nama postingannya
             var snapPosts = await rtdb.ref('posts').orderByChild('authorId').equalTo(uid).once('value');
             var updates = {};
             snapPosts.forEach(function(child) {
@@ -2025,7 +2011,6 @@ var _adminMonitor = setInterval(function() {
             });
             if (Object.keys(updates).length > 0) await rtdb.ref().update(updates);
 
-            // Ubah role jadi blocked dan ganti namanya
             await rtdb.ref('users/' + uid).update({ 
               name: 'Warga Dihapus', 
               role: 'blocked', 
@@ -2035,7 +2020,7 @@ var _adminMonitor = setInterval(function() {
             
             loader(false);
             showDialog('Berhasil', 'Warga telah dikeluarkan.', function() {
-              closeModal(); // Tutup modal kelola warga
+              closeModal();
             }, '✅', 'Tutup', null);
           } catch(e) {
             loader(false);
