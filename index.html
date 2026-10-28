@@ -1172,9 +1172,13 @@ $('composePost').onclick = async function(){
 };
 
 // WARGA & PROFILE
+// ============================================================
+// [FIX] subscribeUsers — hapus orderByChild('lastSeen').limitToLast(200)
+// agar semua user muncul (termasuk yang tidak punya field lastSeen)
+// ============================================================
 function subscribeUsers(){
   if(unsubUsers){ try { unsubUsers(); } catch(e){} }
-  var ref = rtdb.ref('users').orderByChild('lastSeen').limitToLast(200);
+  var ref = rtdb.ref('users');
   var listener = ref.on('value', function(snap){
     users = []; snap.forEach(function(child){ users.push(Object.assign({ uid: child.key, id: child.key }, child.val() || {})); }); users.reverse();
     if(tab === 'warga') renderWargaList();
@@ -1182,14 +1186,19 @@ function subscribeUsers(){
   unsubUsers = function(){ ref.off('value', listener); };
 }
 
+// ============================================================
+// [FIX] renderWargaList — tampilkan SEMUA user (bukan hanya verified)
+// user belum verifikasi tetap tampil dengan label "Belum Verifikasi"
+// count = sama dengan panel admin (kecuali user yang sudah dihapus/blocked)
+// ============================================================
 function renderWargaList(){
   var el = $('allList');
-  var verified = users.filter(function(u){ return u.verified || u.role === 'admin'; });
-  $('wargaCount').textContent = verified.length;
-  var others = verified.filter(function(u){ return u.uid !== me.uid; });
+  var aktif = users.filter(function(u){ return u.role !== 'blocked' && u.name !== 'Warga Dihapus'; });
+  $('wargaCount').textContent = aktif.length;
+  var others = aktif.filter(function(u){ return u.uid !== me.uid; });
   if(!others.length){ el.innerHTML = '<div class="empty-state"><div class="em">👥</div><div class="title">Belum ada warga lain</div></div>'; return; }
   el.innerHTML = others.map(function(u){
-    var roleBadge = u.role === 'admin' ? '<span class="badge-pill pill-blue" style="margin-left:5px">Pengurus</span>' : '';
+    var roleBadge = u.role === 'admin' ? '<span class="badge-pill pill-blue" style="margin-left:5px">Pengurus</span>' : (!u.verified ? '<span class="badge-pill pill-gray" style="margin-left:5px">Belum Verifikasi</span>' : '');
     return '<div class="user-row" data-uid="'+esc(u.uid)+'">'+avatarHtml(u, 46, 17)+'<div style="flex:1;min-width:0"><div style="font-size:14.5px;font-weight:800;display:flex;align-items:center;gap:3px"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(u.name||'Warga')+'</span>'+roleBadge+'</div></div></div>';
   }).join('');
   el.querySelectorAll('[data-uid]').forEach(function(row){ row.onclick = function(){ viewUserProfile(row.dataset.uid); }; });
